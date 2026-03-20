@@ -59,3 +59,17 @@ Thumbs.db
 *.tmp
 *.temp
 *.bak
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Runtime / generated data
+data/crawled/
+data/training/
+
+# Experiment artifacts
+outputs/*
+!outputs/interview_retrospective_20260320/
+!outputs/interview_retrospective_20260320/**
+*.partial.json

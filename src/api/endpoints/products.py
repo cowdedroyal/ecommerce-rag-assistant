@@ -1,163 +1,145 @@
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, HTTPException, Query
-from typing import List, Dict, Any, Optional
-import pandas as pd
-from ...config import Settings
+
+from src.config import Settings
+from src.data import build_catalog_summary, load_order_data, load_product_data
 
 router = APIRouter()
 settings = Settings()
 
-# Load product data
-PRODUCT_DF = pd.read_csv(settings.PRODUCT_DATA_PATH)
-PRODUCT_DF.fillna('', inplace=True)
+
+def _get_product_df():
+    return load_product_data(settings=settings)
+
+
+def _serialize_product(product: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(product.get("Product_ID", "")),
+        "title": product.get("Product_Title", ""),
+        "category": product.get("Category", ""),
+        "brand": product.get("Brand", ""),
+        "price": round(float(product.get("Price", 0) or 0), 2),
+        "rating": round(float(product.get("Rating", 0) or 0), 1),
+        "rating_count": int(product.get("Rating_Count", 0) or 0),
+        "description": str(product.get("Description", ""))[:180],
+        "features": str(product.get("features", "")),
+        "source": product.get("source", ""),
+        "image": product.get("Image", ""),
+    }
+
+
+def _serialize_products(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [_serialize_product(record) for record in records]
+
 
 @router.get("/search", response_model=List[Dict[str, Any]])
 async def search_products(
-    query: str = Query(..., min_length=2),
-    category: Optional[str] = None,
-    min_rating: Optional[float] = None,
-    max_price: Optional[float] = None,
-    limit: int = Query(default=10, ge=1, le=50)
+    query: str = Query(..., min_length=1, description="搜索关键词"),
+    category: Optional[str] = Query(None, description="商品分类"),
+    min_rating: Optional[float] = Query(None, ge=0, le=5, description="最低评分"),
+    max_price: Optional[float] = Query(None, description="最高价格"),
+    limit: int = Query(default=10, ge=1, le=50, description="返回数量"),
 ):
-    """
-    Search products with various filters
-    """
-    # Start with all products
-    filtered_products = PRODUCT_DF.copy()
-    
-    # Apply search query across multiple fields
-    if query:
-        search_mask = (
-            filtered_products['Product_Title'].str.contains(query, case=False, na=False) |
-            filtered_products['Description'].str.contains(query, case=False, na=False) |
-            filtered_products['Category'].str.contains(query, case=False, na=False)
-        )
-        filtered_products = filtered_products[search_mask]
-    
-    # Apply category filter
+    """搜索商品，支持关键词、分类、评分、价格过滤。"""
+    filtered = _get_product_df().copy()
+
+    search_mask = filtered["combined_text"].str.contains(query, case=False, na=False)
+    filtered = filtered[search_mask]
+
     if category:
-        filtered_products = filtered_products[
-            filtered_products['Category'].str.contains(category, case=False, na=False)
+        filtered = filtered[
+            filtered["Category"].str.contains(category, case=False, na=False)
         ]
-    
-    # Apply rating filter
+
     if min_rating is not None:
-        filtered_products = filtered_products[
-            filtered_products['Rating'] >= min_rating
-        ]
-    
-    # Apply price filter
+        filtered = filtered[filtered["Rating"] >= min_rating]
+
     if max_price is not None:
-        filtered_products = filtered_products[
-            filtered_products['Price'] <= max_price
-        ]
-    
-    if filtered_products.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="No products found matching the criteria"
-        )
-    
-    # Sort by relevance (currently using rating as a proxy)
-    filtered_products = filtered_products.sort_values('Rating', ascending=False)
-    
-    # Limit results
-    filtered_products = filtered_products.head(limit)
-    
-    return filtered_products.to_dict('records')
+        filtered = filtered[filtered["Price"] <= max_price]
+
+    if filtered.empty:
+        raise HTTPException(status_code=404, detail="未找到匹配的商品")
+
+    filtered = filtered.sort_values(["Rating", "Rating_Count"], ascending=[False, False]).head(limit)
+    return _serialize_products(filtered.to_dict("records"))
+
 
 @router.get("/category/{category}", response_model=List[Dict[str, Any]])
 async def get_products_by_category(
     category: str,
     limit: int = Query(default=10, ge=1, le=50),
-    min_rating: Optional[float] = None
+    min_rating: Optional[float] = None,
 ):
-    """
-    Retrieve products in a specific category
-    """
-    # Filter by category
-    category_products = PRODUCT_DF[
-        PRODUCT_DF['Category'].str.contains(category, case=False, na=False)
+    """按分类获取商品。"""
+    cat_products = _get_product_df()
+    cat_products = cat_products[
+        cat_products["Category"].str.contains(category, case=False, na=False)
     ].copy()
-    
-    if category_products.empty:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No products found in category '{category}'"
-        )
-    
-    # Apply rating filter if specified
+
     if min_rating is not None:
-        category_products = category_products[
-            category_products['Rating'] >= min_rating
-        ]
-    
-    # Sort by rating and limit results
-    category_products = category_products.sort_values('Rating', ascending=False)
-    category_products = category_products.head(limit)
-    
-    return category_products.to_dict('records')
+        cat_products = cat_products[cat_products["Rating"] >= min_rating]
+
+    if cat_products.empty:
+        raise HTTPException(status_code=404, detail=f"分类 '{category}' 下没有商品")
+
+    cat_products = cat_products.sort_values(["Rating", "Rating_Count"], ascending=[False, False]).head(limit)
+    return _serialize_products(cat_products.to_dict("records"))
+
 
 @router.get("/top-rated", response_model=List[Dict[str, Any]])
 async def get_top_rated_products(
-    min_rating: float = Query(4.0, ge=0, le=5),
+    min_rating: float = Query(4.0, ge=0, le=5, description="最低评分阈值"),
     category: Optional[str] = None,
-    limit: int = Query(default=10, ge=1, le=50)
+    limit: int = Query(default=10, ge=1, le=50),
 ):
-    """
-    Get top-rated products with optional category filter
-    """
-    # Filter by rating
-    top_products = PRODUCT_DF[PRODUCT_DF['Rating'] >= min_rating].copy()
-    
-    # Apply category filter if specified
+    """获取高评分商品。"""
+    top = _get_product_df()
+    top = top[top["Rating"] >= min_rating].copy()
+
     if category:
-        top_products = top_products[
-            top_products['Category'].str.contains(category, case=False, na=False)
-        ]
-    
-    if top_products.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="No products found matching the criteria"
-        )
-    
-    # Sort by rating and limit results
-    top_products = top_products.sort_values('Rating', ascending=False)
-    top_products = top_products.head(limit)
-    
-    return top_products.to_dict('records')
+        top = top[top["Category"].str.contains(category, case=False, na=False)]
+
+    if top.empty:
+        raise HTTPException(status_code=404, detail="未找到符合条件的商品")
+
+    top = top.sort_values(["Rating", "Rating_Count"], ascending=[False, False]).head(limit)
+    return _serialize_products(top.to_dict("records"))
+
 
 @router.get("/recommendations/{product_id}", response_model=List[Dict[str, Any]])
 async def get_product_recommendations(
-    product_id: int,
-    limit: int = Query(default=5, ge=1, le=20)
+    product_id: str,
+    limit: int = Query(default=5, ge=1, le=20),
 ):
-    """
-    Get product recommendations based on category and rating
-    """
-    # Get the target product
-    try:
-        target_product = PRODUCT_DF[PRODUCT_DF['Product_ID'] == product_id].iloc[0]
-    except (IndexError, KeyError):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Product with ID {product_id} not found"
-        )
-    
-    # Find similar products in the same category
-    similar_products = PRODUCT_DF[
-        (PRODUCT_DF['Category'] == target_product['Category']) &
-        (PRODUCT_DF['Product_ID'] != product_id)
+    """基于同分类和相近价格区间的商品推荐。"""
+    product_df = _get_product_df()
+    target = product_df[product_df["Product_ID"].astype(str) == str(product_id)]
+    if target.empty:
+        raise HTTPException(status_code=404, detail=f"商品 {product_id} 不存在")
+
+    target_row = target.iloc[0]
+    similar = product_df[
+        (product_df["Category"] == target_row["Category"])
+        & (product_df["Product_ID"].astype(str) != str(product_id))
     ].copy()
-    
-    if similar_products.empty:
-        raise HTTPException(
-            status_code=404,
-            detail="No similar products found"
-        )
-    
-    # Sort by rating and limit results
-    similar_products = similar_products.sort_values('Rating', ascending=False)
-    similar_products = similar_products.head(limit)
-    
-    return similar_products.to_dict('records')
+
+    if similar.empty:
+        raise HTTPException(status_code=404, detail="没有找到相似商品")
+
+    target_price = float(target_row["Price"] or 0)
+    similar["price_gap"] = (similar["Price"] - target_price).abs()
+    similar = similar.sort_values(["Rating", "price_gap"], ascending=[False, True]).head(limit)
+    return _serialize_products(similar.to_dict("records"))
+
+
+@router.get("/catalog-summary", response_model=Dict[str, Any])
+async def get_catalog_summary():
+    """获取当前目录概览，用于演示模式和前端欢迎页展示。"""
+    product_df = _get_product_df()
+    order_df = load_order_data(settings=settings)
+    summary = build_catalog_summary(product_df, order_df)
+    summary["showcase_products"] = _serialize_products(
+        product_df.sort_values(["Rating", "Rating_Count"], ascending=[False, False]).head(4).to_dict("records")
+    )
+    return summary

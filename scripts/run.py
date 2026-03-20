@@ -17,6 +17,9 @@ import logging
 from dotenv import load_dotenv
 import os
 
+from src.config import Settings
+from src.data import ensure_runtime_data
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -34,34 +37,8 @@ def setup_environment():
         logger.warning("No .env file found, using default settings")
 
 def check_data_files():
-    """Check if required data files exist"""
-    base_dir = Path(__file__).parent.parent
-    
-    # Check for raw data files
-    raw_dir = base_dir / 'data' / 'raw'
-    raw_files = [
-        raw_dir / 'Product_Information_Dataset.csv',
-        raw_dir / 'Order_Data_Dataset.csv'
-    ]
-    
-    # Check for processed data files
-    processed_dir = base_dir / 'data' / 'processed'
-    processed_files = [
-        processed_dir / 'processed_products.csv',
-        processed_dir / 'processed_orders.csv',
-        processed_dir / 'product_embeddings.pkl'
-    ]
-    
-    # Check if either raw or processed files exist
-    raw_missing = [str(f) for f in raw_files if not f.exists()]
-    processed_missing = [str(f) for f in processed_files if not f.exists()]
-    
-    if raw_missing and processed_missing:
-        raise FileNotFoundError(
-            f"Missing required data files. Need either:\n"
-            f"Raw files: {', '.join(raw_missing)}\n"
-            f"OR Processed files: {', '.join(processed_missing)}"
-        )
+    """Ensure runtime data exists."""
+    ensure_runtime_data(settings=Settings())
 
 @click.group()
 def cli():
@@ -108,7 +85,6 @@ def batch(input_file, output_file):
     """Run batch processing of queries"""
     try:
         from src.rag.assistant import ECommerceRAG
-        from src.config import Settings
         import json
         
         # Setup
